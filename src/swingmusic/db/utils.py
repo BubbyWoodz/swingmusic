@@ -17,6 +17,13 @@ def row_to_dict(row: Any):
 
 
 def track_to_dataclass(track: dict, config: UserConfig):
+    # PERF (bubbywoodz): strip lyrics from the in-memory Track. Lyrics are
+    # kept in the DB's extra JSON (see lib/taglib.py) and loaded on demand
+    # by lib/lyrics.py:get_lyrics_from_tags. Holding full lyrics for every
+    # track in RAM was ~800KB for 575 tracks (~36% of extra-dict memory).
+    extra = track.get("extra")
+    if isinstance(extra, dict) and "lyrics" in extra:
+        track = {**track, "extra": {k: v for k, v in extra.items() if k != "lyrics"}}
     return TrackModel(**track, config=config)
 
 

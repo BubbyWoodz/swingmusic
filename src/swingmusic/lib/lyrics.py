@@ -309,17 +309,31 @@ def get_lyrics_from_tags(trackhash: str) -> Lyrics:
 
     :param trackhash:
     """
+    # PERF (bubbywoodz): lyrics are no longer held in the in-memory Track
+    # (stripped in db/utils.py:track_to_dataclass to save RAM). Query the DB
+    # directly — lyrics are still stored in the track table's extra JSON.
+    # Behavior is identical; this is only called on demand when lyrics
+    # are viewed, not in any hot path.
+    from swingmusic.db.engine import DbEngine
+    from swingmusic.db.libdata import TrackTable
+    from sqlalchemy import select
 
-    entry = TrackStore.trackhashmap.get(trackhash, None)
-
-    if entry is None:
-        return Lyrics()
-
-    for track in entry.tracks:
-        if "lyrics" in track.extra:
-            lyrics = track.extra["lyrics"]
-            if lyrics:
-                return Lyrics(lyrics)
+    try:
+        with DbEngine.manager() as conn:
+            rows = conn.execute(
+                select(TrackTable.extra).where(TrackTable.trackhash == trackhash)
+            ).scalars().all()
+            for extra in rows:
+                if isinstance(extra, dict):
+                    lyrics = extra.get("lyrics")
+                    if lyrics:
+                        # lyrics may be a list (from tags) or string
+                        if isinstance(lyrics, list):
+                            lyrics = "\n".join(lyrics) if lyrics else ""
+                        if lyrics:
+                            return Lyrics(lyrics)
+    except Exception:
+        pass
 
     return Lyrics("")
 

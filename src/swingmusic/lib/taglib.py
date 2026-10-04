@@ -344,6 +344,9 @@ def get_tags(filepath: str, config: UserConfig) -> dict:
     # memory for every track. "extra" is stripped from API responses
     # (serializers/track.py), so this changes no external behavior.
     # Measured: -46% of per-track extra-dict memory (~1MB for 575 tracks).
+    # NOTE: "lyrics" is kept here so it persists to the DB; it is stripped
+    # from the in-memory Track in db/utils.py:track_to_dataclass and loaded
+    # on demand via get_lyrics_from_tags (DB query).
     _EXTRA_KEEP = {"lyrics", "track_total", "explicit"}
     extra: dict[str, Any] = {
         k: v for k, v in tags.as_dict().items()

@@ -109,7 +109,14 @@ class Track:
         else:
             self.explicit = bool(explicit_tag)
 
-        self.image = self.albumhash + ".webp" + "?pathhash=" + self.pathhash
+        if isinstance(self.albumhash, str):
+            self.albumhash = sys.intern(self.albumhash)
+        self.image = sys.intern(self.albumhash + ".webp" + "?pathhash=" + self.pathhash)
+
+        # PERF (bubbywoodz): intern copyright; label strings repeat
+        # across albums from the same label.
+        if isinstance(self.copyright, str) and self.copyright:
+            self.copyright = sys.intern(self.copyright)
         # self.extra = {
         #     "disc_total": self.extra.get("disc_total", 0),
         #     "track_total": self.extra.get("track_total", 0),
@@ -228,8 +235,10 @@ class Track:
                 src_genres = src_genres.replace(s, ",")
 
             genres_list: list[str] = src_genres.split(",")
+            # PERF (bubbywoodz): intern genre names; a handful of genres
+            # repeat across thousands of tracks.
             self.genres = [
-                {"name": g.strip(), "genrehash": create_hash(g.strip())}
+                {"name": sys.intern(g.strip()), "genrehash": create_hash(g.strip())}
                 for g in genres_list
             ]
             self.genrehashes = [g["genrehash"] for g in self.genres]
