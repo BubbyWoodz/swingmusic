@@ -1,0 +1,38 @@
+# Lean Dockerfile for the bubbywoodz Swing Music fork.
+# Skips the Nuitka "premium" compilation stage (fragile, not needed for
+# the RAM-optimization work) and installs the package directly.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+LABEL "author"="BubbyWoodz"
+EXPOSE 1970/tcp
+VOLUME /music
+VOLUME /config
+
+ENV PYTHONUNBUFFERED=1
+ENV SWINGMUSIC_IN_DOCKER=1
+ENV HOME=/music
+
+RUN mkdir -p /config/backups /music && ln -sfn /config/backups /music/swingmusic.backup
+RUN ln -sfn /music /root/music
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libev-dev \
+        ffmpeg \
+        libavcodec-extra && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY version.txt /app/version.txt
+COPY requirements.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+COPY pyproject.toml ./
+COPY src/ ./src/
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps -e .
+
+ENTRYPOINT ["python", "-m", "swingmusic", "--host", "0.0.0.0", "--config", "/config"]
