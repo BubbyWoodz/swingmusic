@@ -89,10 +89,15 @@ class Track:
         # PERF (bubbywoodz): intern repeated strings. All tracks on the same
         # album/folder share one string object instead of thousands of
         # duplicates. sys.intern is safe here: these are long-lived,
-        # frequently-compared identifiers.
-        self.album = sys.intern(self.album)
+        # frequently-compared identifiers. Guard against None for
+        # untagged files.
+        if isinstance(self.album, str):
+            self.album = sys.intern(self.album)
         self.og_album = self.album
-        self.folder = sys.intern(self.folder + "/")
+        if isinstance(self.folder, str):
+            self.folder = sys.intern(self.folder + "/")
+        else:
+            self.folder = self.folder + "/"
         self.weakhash = create_hash(self.title, self.artists)
 
         explicit_tag = self.extra.get("explicit", ["0"])
@@ -145,7 +150,8 @@ class Track:
             # PERF (bubbywoodz): intern artist names; the same artist appears
             # on many tracks and each would otherwise hold a duplicate string.
             return [
-                {"name": sys.intern(a), "artisthash": create_hash(a, decode=True)}
+                {"name": sys.intern(a) if isinstance(a, str) else a,
+                 "artisthash": create_hash(a, decode=True)}
                 for a in split_artists(artists, config=self.config)
             ]
 
