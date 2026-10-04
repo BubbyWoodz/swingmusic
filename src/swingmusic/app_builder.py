@@ -102,6 +102,9 @@ def load_endpoints(web: OpenAPI):
         # Events
         web.register_api(swing_api.events)
 
+        # Debug (bubbywoodz fork: memory diagnostics, no state changes)
+        web.register_api(swing_api.debug.api)
+
 
 def load_plugins(web: OpenAPI):
     # TODO: rework plugin support

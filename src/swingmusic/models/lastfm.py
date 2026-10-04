@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass
+@dataclass(slots=True)  # PERF (bubbywoodz): slots eliminate per-instance __dict__
 class SimilarArtistEntry:
     artisthash: str
     name: str
@@ -11,7 +11,7 @@ class SimilarArtistEntry:
     listeners: int
 
 
-@dataclass
+@dataclass(slots=True)  # PERF (bubbywoodz): slots eliminate per-instance __dict__
 class SimilarArtist:
     artisthash: str
     similar_artists: list[SimilarArtistEntry]

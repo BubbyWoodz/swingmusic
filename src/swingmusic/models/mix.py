@@ -10,7 +10,7 @@ from swingmusic.utils.dates import seconds_to_time_string, timestamp_to_time_pas
 from swingmusic.utils.hashing import create_hash
 
 
-@dataclass
+@dataclass(slots=True)  # PERF (bubbywoodz): slots eliminate per-instance __dict__
 class Mix:
     id: str
     title: str

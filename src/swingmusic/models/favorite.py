@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 
-@dataclass
+@dataclass(slots=True)  # PERF (bubbywoodz): slots eliminate per-instance __dict__
 class Favorite:
     hash: str
     type: Literal["album", "track", "artist"]

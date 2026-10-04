@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(slots=True)  # PERF (bubbywoodz): slots eliminate per-instance __dict__
 class StatItem:
     cssclass: str
     text: str
