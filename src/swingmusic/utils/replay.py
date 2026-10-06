@@ -10,7 +10,7 @@ slow with 100k+ scrobbles, add the replay_cache table (see spec).
 
 from collections import defaultdict
 
-from swingmusic.db.libdata import ScrobbleTable
+from swingmusic.db.userdata import ScrobbleTable
 from swingmusic.store.tracks import TrackStore
 from swingmusic.utils.stats import (
     get_albums_in_period,
