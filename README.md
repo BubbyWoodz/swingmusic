@@ -1,21 +1,27 @@
 <div align="center" style="display: flex; justify-content: center; align-items: center;">
   <img class="lo" src='https://github.com/swingmx/swingmusic/raw/master/.github/images/logo-fill.light.svg' style="height: 4rem">
 </div>
-<div align="center" style="font-size: 2rem"><b>Swing Music</b></div>
+<div align="center" style="font-size: 2rem"><b>Reverb</b></div>
 
 <div align="center">
-  <img src="https://img.shields.io/github/v/release/swingmx/swingmusic" alt="Latest GitHub Release" />
+  <img src="https://img.shields.io/github/v/release/BubbyWoodz/swingmusic" alt="Latest GitHub Release" />
 </div>
  
-**<div align="center" style="padding-top: 1.25rem">[Download](https://swingmx.com/downloads) • [Get Android Client](https://github.com/swingmx/android) •  <a href="https://github.com/sponsors/swingmx" target="_blank">Sponsor Us ❤️</a> • [Docs](https://swingmx.com/guide/introduction.html) • [Screenshots](https://swingmx.com) • [r/SwingMusicApp](https://www.reddit.com/r/SwingMusicApp)</div>**
+**<div align="center" style="padding-top: 1.25rem">[GitHub](https://github.com/BubbyWoodz/swingmusic) • [Upstream: Swing Music](https://github.com/swingmx/swingmusic) • [Docs](https://swingmx.com/guide/introduction.html)</div>**
 
 ##
 
-[![Image showing the Swing Music artist page](https://raw.githubusercontent.com/swingmx/swingmusic/master/.github/images/artist.webp)](https://raw.githubusercontent.com/swing-opensource/swingmusic/master/.github/images/artist.webp)
+[![Image showing the Reverb artist page](https://raw.githubusercontent.com/swingmx/swingmusic/master/.github/images/artist.webp)](https://raw.githubusercontent.com/swing-opensource/swingmusic/master/.github/images/artist.webp)
 
 ##
 
-Swing Music is a blazingly fast and beautiful, self-hosted music streaming server. Like a cooler Spotify ... but bring your own music.
+Reverb is a community fork of [Swing Music](https://github.com/swingmx/swingmusic) — a blazingly fast and beautiful, self-hosted music streaming server. Like a cooler Spotify ... but bring your own music.
+
+Reverb keeps everything Swing Music does, adds a set of new features, and trims memory usage for smaller servers.
+
+### Attribution
+
+Reverb is built on [Swing Music](https://github.com/swingmx/swingmusic) by [swingmx](https://github.com/swingmx), licensed under the [AGPLv3](LICENSE). All credit for the original application goes to the Swing Music contributors — see the [Contributors](#contributors) section below.
 
 ## Features
 
@@ -32,17 +38,27 @@ Swing Music is a blazingly fast and beautiful, self-hosted music streaming serve
 - **Multi-user support**
 - **Cross-platform** - Windows, Linux, MacOS (coming soon), arm64, x86
 
+### Reverb additions
+
+- **Subsonic / OpenSubsonic API** - use any Subsonic client (Arpeggi, Amperfy, play:Sub, ...) against your library
+- **Replay** - Apple Music Replay-style yearly and monthly listening stats
+- **Smart play logging** - server-side play validation, reliable offline-friendly scrobbling
+- **Connect-style sync** - per-user now-playing state shared across devices, with remote control and seamless handoff
+- **On-the-fly transcoding** - automatic format/bitrate conversion for compatibility and low bandwidth
+- **Custom playlist artwork** - upload your own playlist covers
+- **Memory optimizations** - trimmed metadata, lazy lyrics, string interning for smaller servers
+
 ### Installation
 
-On Linux or MacOS run the command below to install Swing Music:
+On Linux or MacOS run the command below to install Reverb:
 
 ```sh
 curl -fsSL https://setup.swingmx.com | bash
 ```
 
-To run Swing Music on Windows, download the portable build from the [downloads page](https://swingmx.com/downloads.html) and run it.
+To run Reverb on Windows, download the portable build from the [downloads page](https://swingmx.com/downloads.html) and run it.
 
-The app should start at <http://localhost:1970> by default. Open the URL in your browser to configure and use Swing Music.
+The app should start at <http://localhost:1970> by default. Open the URL in your browser to configure and use Reverb.
 
 > [!TIP]
 > To stream your music from your Android device, download the [Android mobile client](https://github.com/swingmx/android).
@@ -53,9 +69,9 @@ Here's a sample Docker compose file:
 
 ```yaml
 services:
-  swingmusic:
-    image: ghcr.io/swingmx/swingmusic:latest
-    container_name: swingmusic
+  reverb:
+    image: ghcr.io/bubbywoodz/swingmusic:latest
+    container_name: reverb
     ports:
       - "1970:1970"
     volumes:
@@ -72,22 +88,22 @@ The `SWINGMUSIC_DEVICE_NAME` sets the name this server reports to connected clie
 ### Using Docker CLI
 
 ```sh
-docker pull ghcr.io/swingmx/swingmusic:latest
+docker pull ghcr.io/bubbywoodz/swingmusic:latest
 ```
 
 Then run:
 
 ```sh
-docker run --name swingmusic -p 1970:1970 -e SWINGMUSIC_PORT=1970 -e SWINGMUSIC_DEVICE_NAME="Host Name Here" -v /path/to/music:/music -v /path/to/config:/config --restart unless-stopped ghcr.io/swingmx/swingmusic:latest
+docker run --name reverb -p 1970:1970 -e SWINGMUSIC_PORT=1970 -e SWINGMUSIC_DEVICE_NAME="Host Name Here" -v /path/to/music:/music -v /path/to/config:/config --restart unless-stopped ghcr.io/bubbywoodz/swingmusic:latest
 ```
 
 Replace the following with appropriate values:
 
 1. `/path/to/music` - Your music directory on the host
-2. `/path/to/config` - Path to create Swing Music configs on the host
+2. `/path/to/config` - Path to create Reverb configs on the host
 3. `Host Name Here` - Your host device name
 
-You can change the Swing Music port by updating both the `-p` mapping and `SWINGMUSIC_PORT` to the same value (e.g. `-p 2001:2001 -e SWINGMUSIC_PORT=2001`).
+You can change the Reverb port by updating both the `-p` mapping and `SWINGMUSIC_PORT` to the same value (e.g. `-p 2001:2001 -e SWINGMUSIC_PORT=2001`).
 
 ### Options
 
@@ -98,7 +114,7 @@ Options flags can be passed when starting the app in the terminal to tweak runti
 
 ### Contributing and Development
 
-Swing Music is looking for contributors. If you're interested, please join us at the [Swing Music Community](https://t.me/+9n61PFcgKhozZDE0) group on Telegram. For more information, take a look at https://github.com/swing-opensource/swingmusic/issues/186.
+Reverb is looking for contributors. If you're interested, please open an issue or pull request at [BubbyWoodz/swingmusic](https://github.com/BubbyWoodz/swingmusic). For more information about the upstream project, take a look at https://github.com/swing-opensource/swingmusic/issues/186.
 
 [**CONTRIBUTING GUIDELINES**](.github/contributing.md).
 
