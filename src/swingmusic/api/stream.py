@@ -14,9 +14,13 @@ from swingmusic.api.apischemas import TrackHashSchema
 from swingmusic.config import UserConfig
 from swingmusic.lib.transcoder import start_transcoding
 from swingmusic.lib.transcode import (
+    ProgressiveTranscoder,
     TranscodeCache,
+    TranscodeStreamError,
+    TRANSCODE_MIMES,
     cache_key,
     effective_bitrate,
+    estimate_seek_seconds,
     normalize_format,
     parse_bitrate,
     should_transcode,
@@ -180,6 +184,11 @@ def send_track_file(path: TrackHashSchema, query: SendTrackFileQuery):
     When no quality is requested, the user's saved transcode preference is used;
     when neither is set, the original file is served.
 
+    Transcodes stream progressively (ffmpeg piped straight to the response)
+    so playback starts in under a second; output is cached in the background
+    for instant repeat plays. Falls back to blocking transcode-then-serve if
+    progressive streaming fails.
+
     **NOTES:**
     - Transcoded streams report incorrect duration during playback (idk why! FFMPEG gurus we need your help here).
     - The quality parameter is the desired bitrate in kbps.
@@ -242,7 +251,21 @@ def send_track_file(path: TrackHashSchema, query: SendTrackFileQuery):
         resp.headers.add("X-Transcoded-Bitrate", f"{bitrate}k")
         return resp
 
-    # Transcode (blocking), cache the result, then serve with Range support.
+    # Progressive first: pipe ffmpeg straight to the response for instant
+    # playback (with background caching). Falls back to blocking
+    # transcode-then-serve below if progressive streaming fails.
+    try:
+        return progressive_transcode_response(
+            track.filepath,
+            trackhash,
+            bitrate,
+            req_format,
+            duration=getattr(track, "duration", None),
+        )
+    except TranscodeStreamError:
+        pass
+
+    # Blocking fallback: transcode fully, cache, serve with Range support.
     tmp = tempfile.NamedTemporaryFile(
         delete=False, suffix=f".{req_format}", dir=get_transcode_cache().cache_dir
     )
@@ -259,6 +282,65 @@ def send_track_file(path: TrackHashSchema, query: SendTrackFileQuery):
 
     resp = send_file_as_chunks(cached_path)
     resp.headers.add("X-Transcoded-Bitrate", f"{bitrate}k")
+    return resp
+
+
+def progressive_transcode_response(
+    filepath: str,
+    trackhash: str,
+    bitrate: int,
+    req_format: str,
+    duration: "float | None" = None,
+) -> Response:
+    """
+    Stream a transcoded file progressively: ffmpeg's stdout is piped
+    directly to the HTTP response, so playback starts in under a second.
+
+    Honors Range requests by restarting ffmpeg at the estimated seek
+    position (-ss before -i). While streaming from position 0, output is
+    also written to the transcode cache in the background, so the next
+    identical request serves from disk.
+
+    Raises TranscodeStreamError if ffmpeg can't produce output; callers
+    should fall back to blocking transcode-then-serve (or the original).
+    """
+    range_header = request.headers.get("Range")
+    seek = (
+        estimate_seek_seconds(get_start_range(range_header), bitrate, duration)
+        if range_header
+        else 0.0
+    )
+
+    transcoder = ProgressiveTranscoder(
+        filepath,
+        bitrate,
+        req_format,
+        seek_seconds=seek,
+        cache=get_transcode_cache(),
+        cache_key=cache_key(trackhash, bitrate, req_format),
+    )
+    # Primes ffmpeg; raises TranscodeStreamError before we commit to a response.
+    stream = transcoder.response_stream()
+
+    mime = TRANSCODE_MIMES.get(req_format, "audio/mpeg")
+    resp = Response(
+        stream,
+        status=206 if seek > 0 else 200,
+        mimetype=mime,
+        direct_passthrough=True,
+    )
+    resp.headers.add("X-Transcoded-Bitrate", f"{bitrate}k")
+    resp.headers.add("Accept-Ranges", "bytes")
+    resp.headers.add("Access-Control-Expose-Headers", "Content-Range")
+    if seek > 0 and range_header:
+        start_byte = get_start_range(range_header)
+        if duration and duration > 0:
+            est_total = int(duration * bitrate * 1000 / 8)
+            resp.headers.add(
+                "Content-Range", f"bytes {start_byte}-{est_total - 1}/{est_total}"
+            )
+        else:
+            resp.headers.add("Content-Range", f"bytes {start_byte}-*/*")
     return resp
 
 
