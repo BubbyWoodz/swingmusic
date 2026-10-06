@@ -51,7 +51,7 @@ tools.add_argument(
 
 def run(*args, **kwargs):
     """
-    Swing Music entry point
+    Reverb entry point
     """
     args = parser.parse_args()
     args = vars(args)
