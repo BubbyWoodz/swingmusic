@@ -47,9 +47,7 @@ def stream():
         normalize_format,
         parse_bitrate,
         should_transcode,
-        transcode_file,
     )
-    import tempfile
 
     max_br = request.args.get("maxBitRate") or request.form.get("maxBitRate")
     req_format = normalize_format(
@@ -81,22 +79,22 @@ def stream():
             as_attachment=False,
         )
 
-    tmp = tempfile.NamedTemporaryFile(
-        delete=False, suffix=f".{fmt}", dir=cache.cache_dir
+    # Progressive: pipe ffmpeg straight to the response for instant playback,
+    # tee'ing to the cache in the background. Never break playback: any
+    # failure falls back to the original file.
+    from swingmusic.lib.transcode import (
+        ProgressiveTranscoder,
+        TranscodeStreamError,
+        TRANSCODE_MIMES,
     )
-    tmp.close()
-    if not transcode_file(track.filepath, tmp.name, bitrate, fmt):
-        # Fall back to the original file rather than failing the stream.
-        return send_from_directory(
-            Path(track.filepath).parent,
-            Path(track.filepath).name,
-            mimetype=guess_mime_type(track.filepath),
-            conditional=True,
-            as_attachment=False,
-        )
+    from flask import Response
 
-    cached_path = cache.put(key, tmp.name, fmt)
-    if cached_path is None:
+    try:
+        transcoder = ProgressiveTranscoder(
+            track.filepath, bitrate, fmt, cache=cache, cache_key=key
+        )
+        stream = transcoder.response_stream()
+    except TranscodeStreamError:
         return send_from_directory(
             Path(track.filepath).parent,
             Path(track.filepath).name,
@@ -104,12 +102,11 @@ def stream():
             conditional=True,
             as_attachment=False,
         )
-    return send_from_directory(
-        Path(cached_path).parent,
-        Path(cached_path).name,
-        mimetype=guess_mime_type(cached_path),
-        conditional=True,
-        as_attachment=False,
+    return Response(
+        stream,
+        status=200,
+        mimetype=TRANSCODE_MIMES.get(fmt, "audio/mpeg"),
+        direct_passthrough=True,
     )
 
 
