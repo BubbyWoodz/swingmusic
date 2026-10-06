@@ -101,7 +101,7 @@ def wsgi_loader(target: str):
 
 def start_swingmusic(host: str, port: int):
     """
-    Creates and starts the Flask application server for Swing Music.
+    Creates and starts the Flask application server for Reverb.
 
     This function configures Granian as a WSGI server with multiple blocking
     threads to support concurrent SSE connections without blocking other requests.
