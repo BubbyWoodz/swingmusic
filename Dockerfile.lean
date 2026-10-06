@@ -6,7 +6,10 @@
 # then bundles it as client.zip so the backend serves our UI, not upstream's.
 
 # ---- Stage 1: Build the web client ----
-FROM node:20-slim AS webclient-build
+# Uses $BUILDPLATFORM (not the target platform) because the output is
+# architecture-independent static files. This avoids slow/fragile QEMU
+# emulation when building for arm64.
+FROM --platform=$BUILDPLATFORM node:20-slim AS webclient-build
 
 WORKDIR /webclient
 
