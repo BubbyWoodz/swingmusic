@@ -30,6 +30,9 @@ from swingmusic.store.tracks import TrackStore
 from swingmusic.utils.dates import create_new_date, date_string_to_time_passed
 from swingmusic.settings import Paths
 
+# Reverb: serving artwork files directly (used by GET /playlists/<id>/artwork)
+from flask import send_from_directory
+
 tag = Tag(name="Playlists", description="Get and manage playlists")
 api = APIBlueprint("playlists", __name__, url_prefix="/playlists", abp_tags=[tag])
 
@@ -374,6 +377,138 @@ def remove_playlist_image(path: PlaylistIDPath):
     playlist.last_updated = date_string_to_time_passed(playlist.last_updated)
 
     return {"playlist": playlist}, 200
+
+
+# ---------------------------------------------------------------------------
+# Reverb: dedicated custom artwork endpoints.
+# These are the canonical artwork API. The older /update (bundled) and
+# /remove-img endpoints are kept for backwards compatibility.
+# ---------------------------------------------------------------------------
+
+
+class ArtworkUploadForm(BaseModel):
+    image: FileStorage = Field(
+        description="Artwork image file (jpeg, png or webp)"
+    )
+
+
+def _clear_playlist_artwork(playlistid: str):
+    """
+    Shared logic: remove a playlist's custom artwork from DB and disk.
+    Returns the updated playlist dataclass, or None if not found.
+    """
+    playlist = PlaylistTable.get_by_id(playlistid)
+
+    if playlist is None:
+        return None
+
+    old_image = playlist.image
+
+    PlaylistTable.remove_image(playlistid)
+
+    # remove the old files (image + thumbnail) right away
+    if old_image and old_image != "None":
+        folder = Paths().playlist_img_path
+        for name in (old_image, "thumb_" + old_image):
+            try:
+                (folder / name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    playlistlib.cleanup_playlist_images()
+
+    playlist.image = None
+    playlist.thumb = None
+    playlist.has_image = False
+    try:
+        playlist.settings["has_gif"] = False
+    except (TypeError, KeyError):
+        pass
+
+    playlist.images = playlistlib.get_first_4_images(trackhashes=playlist.trackhashes)
+    playlist.last_updated = date_string_to_time_passed(playlist.last_updated)
+
+    return playlist
+
+
+@api.post("/<playlistid>/artwork")
+def upload_playlist_artwork(path: PlaylistIDPath, form: ArtworkUploadForm):
+    """
+    Upload custom artwork for a playlist.
+
+    Accepts jpeg, png or webp. Images are validated, resized so the
+    longest side is at most 1500px, and stored as webp.
+    """
+    playlistid = path.playlistid
+    db_playlist = PlaylistTable.get_by_id(playlistid)
+
+    if db_playlist is None:
+        return {"error": "Playlist not found"}, 404
+
+    try:
+        pil_image = Image.open(form.image)
+        pil_image = playlistlib.prepare_artwork(pil_image)
+    except UnidentifiedImageError:
+        return {"error": "Failed: Invalid image"}, 400
+    except ValueError as e:
+        return {"error": f"Failed: {e}"}, 400
+
+    # remove previous custom artwork (files + DB) before saving the new one
+    _clear_playlist_artwork(playlistid)
+
+    filename = playlistlib.save_p_image(pil_image, playlistid, "image/webp")
+
+    PlaylistTable.update_one(
+        playlistid,
+        {
+            "image": filename,
+            "last_updated": create_new_date(),
+        },
+    )
+    playlistlib.cleanup_playlist_images()
+
+    return {"msg": "Artwork updated", "image": filename}, 200
+
+
+@api.delete("/<playlistid>/artwork")
+def delete_playlist_artwork(path: PlaylistIDPath):
+    """
+    Remove custom playlist artwork. Falls back to default artwork.
+    """
+    playlist = _clear_playlist_artwork(path.playlistid)
+
+    if playlist is None:
+        return {"error": "Playlist not found"}, 404
+
+    return {"playlist": playlist}, 200
+
+
+@api.get("/<playlistid>/artwork")
+def get_playlist_artwork(path: PlaylistIDPath):
+    """
+    Serve a playlist's custom artwork.
+
+    Falls back to the default playlist artwork when no custom
+    image has been uploaded.
+    """
+    playlist = PlaylistTable.get_by_id(path.playlistid)
+
+    if playlist is None:
+        return {"error": "Playlist not found"}, 404
+
+    folder = Paths().playlist_img_path
+
+    if playlist.image and playlist.image != "None":
+        fpath = folder / playlist.image
+        if fpath.exists():
+            return send_from_directory(folder, playlist.image)
+
+    # default Swing behavior: generic playlist artwork
+    fallback = Paths().assets_path / "playlist.svg"
+    if fallback.exists():
+        return send_from_directory(fallback.parent, fallback.name)
+
+    return {"error": "No artwork available"}, 404
 
 
 @api.delete("/<playlistid>/delete", methods=["DELETE"])
