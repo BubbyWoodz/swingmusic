@@ -105,6 +105,9 @@ def load_endpoints(web: OpenAPI):
         # Debug (bubbywoodz fork: memory diagnostics, no state changes)
         web.register_api(swing_api.debug.api)
 
+        # Subsonic / OpenSubsonic API (bubbywoodz fork: plain Flask blueprint)
+        web.register_blueprint(swing_api.subsonic.bp)
+
 
 def load_plugins(web: OpenAPI):
     # TODO: rework plugin support
