@@ -1,5 +1,5 @@
 """
-Subsonic / OpenSubsonic REST API for the bubbywoodz Swing Music fork.
+Subsonic / OpenSubsonic REST API for the Reverb fork.
 
 Mounts at /rest/ alongside Swing's native API (untouched). Both APIs read
 from the same in-memory stores — no data duplication.
