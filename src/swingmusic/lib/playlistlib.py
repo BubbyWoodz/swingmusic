@@ -13,6 +13,34 @@ from swingmusic.store.tracks import TrackStore
 
 logger = logging.getLogger(__name__)
 
+# Reverb: custom playlist artwork constraints (dedicated /artwork endpoints)
+ARTWORK_MAX_DIM = 1500
+ARTWORK_ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
+
+
+def prepare_artwork(img: Image.Image, max_dim: int = ARTWORK_MAX_DIM) -> Image.Image:
+    """
+    Validate and normalize an uploaded playlist artwork image.
+
+    - Only JPEG, PNG and WEBP are accepted (raises ValueError otherwise).
+    - Converts to RGB/RGBA as needed for WEBP output.
+    - Downscales so the longest side is at most ``max_dim`` (aspect preserved).
+      Smaller images are left untouched.
+
+    Returns the (possibly resized) image.
+    """
+    fmt = (img.format or "").upper()
+    if fmt not in ARTWORK_ALLOWED_FORMATS:
+        raise ValueError(f"Unsupported image format: {img.format or 'unknown'}")
+
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+
+    if max(img.size) > max_dim:
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
+    return img
+
 def create_thumbnail(image: Image, img_name: str) -> str:
     """
     Creates a 250 px high thumbnail from the Image.
