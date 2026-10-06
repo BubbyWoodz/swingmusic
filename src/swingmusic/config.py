@@ -96,6 +96,9 @@ class UserConfig(metaclass=Singleton):
     # classical support
     classicalEnabled: bool = True
 
+    # subsonic / opensubsonic API (bubbywoodz fork)
+    subsonicEnabled: bool = False
+
     artistSortingArticles: set[str] = field(
         default_factory=lambda: (
             {
