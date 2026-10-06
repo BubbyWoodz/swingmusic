@@ -335,3 +335,70 @@ def revoke_device(path: DeviceIdPath):
         return {"error": str(e)}, e.status_code or 400
     except CloudError as e:
         return {"error": str(e)}, e.status_code or 500
+
+
+class TranscodePrefsBody(BaseModel):
+    quality: str = Field(
+        "original",
+        description="Preferred streaming quality: original, 320, 192, 128",
+    )
+    format: str = Field(
+        "mp3",
+        description="Preferred transcode container: mp3, opus, aac, ogg",
+    )
+
+
+@api.get("/transcode")
+def get_transcode_prefs():
+    """
+    Get the current user's streaming/transcode preferences.
+    """
+    from swingmusic.db.userdata import UserTable
+    from swingmusic.lib.transcode import normalize_format, parse_bitrate
+
+    userid = get_current_userid()
+    user = UserTable.get_by_id(userid)
+    extra = (user.extra or {}) if user else {}
+    quality = str(extra.get("transcode_quality", "original"))
+    fmt = str(extra.get("transcode_format", "mp3"))
+
+    # Sanitize stored values.
+    if parse_bitrate(quality) is None and quality != "original":
+        quality = "original"
+    if normalize_format(fmt) is None:
+        fmt = "mp3"
+
+    return {"quality": quality, "format": fmt}
+
+
+@api.put("/transcode")
+def set_transcode_prefs(body: TranscodePrefsBody):
+    """
+    Set the current user's streaming/transcode preferences.
+
+    These apply when no explicit quality is requested on the stream endpoint.
+    """
+    from swingmusic.db.userdata import UserTable
+    from swingmusic.lib.transcode import TRANSCODE_FORMATS, normalize_format, parse_bitrate
+
+    quality = body.quality.strip().lower()
+    if quality != "original" and parse_bitrate(quality) is None:
+        return {"error": "Invalid quality. Use original, 320, 192 or 128."}, 400
+
+    fmt = normalize_format(body.format)
+    if fmt is None:
+        return {
+            "error": f"Invalid format. Use one of: {', '.join(TRANSCODE_FORMATS)}."
+        }, 400
+
+    userid = get_current_userid()
+    user = UserTable.get_by_id(userid)
+    if user is None:
+        return {"error": "User not found."}, 404
+
+    extra = dict(user.extra or {})
+    extra["transcode_quality"] = quality
+    extra["transcode_format"] = fmt
+    UserTable.update_one({"id": userid, "extra": extra})
+
+    return {"msg": "Transcode preferences updated.", "quality": quality, "format": fmt}
