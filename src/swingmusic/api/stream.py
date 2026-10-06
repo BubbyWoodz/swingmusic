@@ -89,7 +89,7 @@ class SendTrackFileQuery(BaseModel):
     filepath: str = Field(description="The filepath to play (if available)")
     quality: str = Field(
         "original",
-        description="The quality of the audio file. Options: original, 320, 192, 128",
+        description="The quality of the audio file. Options: auto, original, 320, 192, 128",
     )
     bitrate: str | None = Field(
         None,
