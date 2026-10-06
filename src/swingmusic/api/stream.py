@@ -13,8 +13,18 @@ from flask_openapi3 import APIBlueprint, Tag
 from swingmusic.api.apischemas import TrackHashSchema
 from swingmusic.config import UserConfig
 from swingmusic.lib.transcoder import start_transcoding
+from swingmusic.lib.transcode import (
+    TranscodeCache,
+    cache_key,
+    effective_bitrate,
+    normalize_format,
+    parse_bitrate,
+    should_transcode,
+    transcode_file,
+)
 from flask import request, Response, send_from_directory
 from swingmusic.lib.trackslib import get_silence_paddings
+from swingmusic.settings import Paths
 
 from swingmusic.store.tracks import TrackStore
 from swingmusic.utils.files import guess_mime_type
@@ -39,15 +49,51 @@ class TransCodeStore:
         return cls.map.get(trackhash)
 
 
+_transcode_cache: TranscodeCache | None = None
+
+
+def get_transcode_cache() -> TranscodeCache:
+    """Singleton disk-backed LRU cache for transcoded audio."""
+    global _transcode_cache
+    if _transcode_cache is None:
+        max_mb = getattr(UserConfig(), "transcodeCacheMaxMB", 1024)
+        cache_dir = Paths().config_dir / "transcode_cache"
+        _transcode_cache = TranscodeCache(cache_dir, max_mb=max_mb)
+    return _transcode_cache
+
+
+def get_user_transcode_prefs() -> tuple[str, str]:
+    """
+    Returns (quality, format) preferred by the current user, or ("original", "mp3")
+    defaults when unavailable. Stored in the user's `extra` JSON field.
+    """
+    try:
+        from swingmusic.utils.auth import get_current_userid
+        from swingmusic.db.userdata import UserTable
+
+        userid = get_current_userid()
+        user = UserTable.get_by_id(userid)
+        extra = (user.extra or {}) if user else {}
+        quality = str(extra.get("transcode_quality", "original"))
+        fmt = str(extra.get("transcode_format", "mp3"))
+        return quality, fmt
+    except Exception:
+        return "original", "mp3"
+
+
 class SendTrackFileQuery(BaseModel):
     filepath: str = Field(description="The filepath to play (if available)")
     quality: str = Field(
         "original",
-        description="The quality of the audio file. Options: original, 1411, 1024, 512, 320, 256, 128, 96",
+        description="The quality of the audio file. Options: original, 320, 192, 128",
     )
-    container: Literal["mp3", "aac", "flac", "webm", "ogg"] = Field(
+    bitrate: str | None = Field(
+        None,
+        description="Alias for quality: requested bitrate like 128k. Overrides quality if set.",
+    )
+    container: Literal["mp3", "aac", "opus", "ogg"] = Field(
         "mp3",
-        description="The container format of the audio file. Options: mp3, aac, flac, webm, ogg",
+        description="The container format of the audio file. Options: mp3, aac, opus, ogg",
     )
 
 
@@ -123,59 +169,97 @@ def send_track_file_legacy(path: TrackHashSchema, query: SendTrackFileQuery):
     return msg, 404
 
 
-# @api.get("/<trackhash>")
-# def send_track_file(path: TrackHashSchema, query: SendTrackFileQuery):
-#     """
-#     Get a playable audio file with Range headers support
+@api.get("/<trackhash>")
+def send_track_file(path: TrackHashSchema, query: SendTrackFileQuery):
+    """
+    Get a playable audio file with Range headers support
 
-#     Returns a playable audio file that corresponds to the given filepath. Falls back to track hash if filepath is not found.
+    Returns a playable audio file that corresponds to the given filepath. Falls back to track hash if filepath is not found.
 
-#     Transcoding can be done by sending the quality and container query parameters.
+    Transcoding can be done by sending the quality and container query parameters.
+    When no quality is requested, the user's saved transcode preference is used;
+    when neither is set, the original file is served.
 
-#     **NOTES:**
-#     - Transcoded streams report incorrect duration during playback (idk why! FFMPEG gurus we need your help here).
-#     - The quality parameter is the desired bitrate in kbps.
-#     - The mp3 container is the best container for upto 320kbps (and has better duration reporting). The flac container allows for higher bitrates but it produces dramatically larger files (when transcoding from lossy formats).
-#     - You can get the transcoded bitrate by checking the X-Transcoded-Bitrate header on the first request's response.
-#     """
-#     trackhash = path.trackhash
-#     filepath = query.filepath
+    **NOTES:**
+    - Transcoded streams report incorrect duration during playback (idk why! FFMPEG gurus we need your help here).
+    - The quality parameter is the desired bitrate in kbps.
+    - The mp3 container is the best container for upto 320kbps (and has better duration reporting).
+    - Transcoded outputs are cached on disk (LRU, size-capped) so repeat plays don't re-transcode.
+    - You can get the transcoded bitrate by checking the X-Transcoded-Bitrate header on the response.
+    """
+    trackhash = path.trackhash
+    filepath = query.filepath
 
-#     # If filepath is provided, try to send that
-#     track = None
-#     tracks = TrackStore.get_tracks_by_filepaths([filepath])
+    # If filepath is provided, try to send that
+    track = None
+    tracks = TrackStore.get_tracks_by_filepaths([filepath])
 
-#     if len(tracks) > 0 and os.path.exists(filepath):
-#         track = tracks[0]
-#     else:
-#         res = TrackStore.trackhashmap.get(trackhash)
+    if len(tracks) > 0 and os.path.exists(filepath):
+        track = tracks[0]
+    else:
+        res = TrackStore.trackhashmap.get(trackhash)
 
-#         # When finding by trackhash, sort by bitrate
-#         # and get the first track that exists
-#         if res is not None:
-#             tracks = sorted(res.tracks, key=lambda x: x.bitrate, reverse=True)
+        # When finding by trackhash, sort by bitrate
+        # and get the first track that exists
+        if res is not None:
+            tracks = sorted(res.tracks, key=lambda x: x.bitrate, reverse=True)
 
-#             for t in tracks:
-#                 if os.path.exists(t.filepath):
-#                     track = t
-#                     break
+            for t in tracks:
+                if os.path.exists(t.filepath):
+                    track = t
+                    break
 
-#     if track is not None:
-#         if query.quality == "original":
-#             return send_file_as_chunks(track.filepath)
+    if track is None:
+        return {"msg": "File Not Found"}, 404
 
-#         # prevent requesting over transcoding
-#         max_bitrate = track.bitrate
-#         requested_bitrate = int(query.quality)
+    # Resolve requested quality: explicit param > user preference > original.
+    # `bitrate` is an alias for `quality` when provided.
+    req_quality = query.bitrate or query.quality
+    if req_quality == "original":
+        # Fall back to the user's saved preference, if any.
+        pref_quality, pref_format = get_user_transcode_prefs()
+        if pref_quality != "original":
+            req_quality = pref_quality
+            if query.container == "mp3":
+                # Only apply the preferred format when the caller didn't
+                # explicitly pick a container.
+                query = query.model_copy(update={"container": pref_format})
 
-#         if query.container != "flac":
-#             # drop to 320 for non-flac containers
-#             requested_bitrate = min(320, requested_bitrate)
+    req_bitrate = parse_bitrate(req_quality)
+    req_format = normalize_format(query.container) or "mp3"
 
-#         quality = f"{min(max_bitrate, requested_bitrate)}k"
-#         return transcode_and_stream(trackhash, track.filepath, quality, query.container)
+    # Smart bypass: serve the original when no conversion is needed.
+    if not should_transcode(track.bitrate, track.filepath, req_bitrate, req_format):
+        return send_file_as_chunks(track.filepath)
 
-#     return {"msg": "File Not Found"}, 404
+    bitrate = effective_bitrate(track.bitrate, req_bitrate) or req_bitrate or 128
+    # Cap non-lossless containers at 320k (matches upstream behavior).
+    bitrate = min(bitrate, 320)
+
+    cached = get_transcode_cache().get(cache_key(trackhash, bitrate, req_format))
+    if cached is not None:
+        resp = send_file_as_chunks(cached)
+        resp.headers.add("X-Transcoded-Bitrate", f"{bitrate}k")
+        return resp
+
+    # Transcode (blocking), cache the result, then serve with Range support.
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, suffix=f".{req_format}", dir=get_transcode_cache().cache_dir
+    )
+    tmp.close()
+    ok = transcode_file(track.filepath, tmp.name, bitrate, req_format)
+    if not ok:
+        return {"msg": "Transcoding failed"}, 500
+
+    cached_path = get_transcode_cache().put(
+        cache_key(trackhash, bitrate, req_format), tmp.name, req_format
+    )
+    if cached_path is None:
+        return {"msg": "Transcoding failed"}, 500
+
+    resp = send_file_as_chunks(cached_path)
+    resp.headers.add("X-Transcoded-Bitrate", f"{bitrate}k")
+    return resp
 
 
 def transcode_and_stream(trackhash: str, filepath: str, bitrate: str, container: str):
