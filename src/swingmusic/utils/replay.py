@@ -1,5 +1,5 @@
 """
-Replay utilities for the bubbywoodz Swing Music fork.
+Replay utilities for the Reverb fork.
 
 Computes Apple Music Replay-style aggregates from the scrobble table.
 All functions are pure computations over existing data — no schema changes.
