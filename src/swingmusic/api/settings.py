@@ -339,8 +339,8 @@ def revoke_device(path: DeviceIdPath):
 
 class TranscodePrefsBody(BaseModel):
     quality: str = Field(
-        "original",
-        description="Preferred streaming quality: original, 320, 192, 128",
+        "auto",
+        description="Preferred streaming quality: auto, original, 320, 192, 128",
     )
     format: str = Field(
         "mp3",
@@ -363,7 +363,7 @@ def get_transcode_prefs():
     fmt = str(extra.get("transcode_format", "mp3"))
 
     # Sanitize stored values.
-    if parse_bitrate(quality) is None and quality != "original":
+    if quality not in ("original", "auto") and parse_bitrate(quality) is None:
         quality = "original"
     if normalize_format(fmt) is None:
         fmt = "mp3"
@@ -382,8 +382,8 @@ def set_transcode_prefs(body: TranscodePrefsBody):
     from swingmusic.lib.transcode import TRANSCODE_FORMATS, normalize_format, parse_bitrate
 
     quality = body.quality.strip().lower()
-    if quality != "original" and parse_bitrate(quality) is None:
-        return {"error": "Invalid quality. Use original, 320, 192 or 128."}, 400
+    if quality not in ("original", "auto") and parse_bitrate(quality) is None:
+        return {"error": "Invalid quality. Use auto, original, 320, 192 or 128."}, 400
 
     fmt = normalize_format(body.format)
     if fmt is None:
