@@ -99,6 +99,9 @@ class UserConfig(metaclass=Singleton):
     # subsonic / opensubsonic API (bubbywoodz fork)
     subsonicEnabled: bool = False
 
+    # on-the-fly transcoding cache size cap in MB (reverb fork)
+    transcodeCacheMaxMB: int = 1024
+
     artistSortingArticles: set[str] = field(
         default_factory=lambda: (
             {
