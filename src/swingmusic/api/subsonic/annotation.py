@@ -6,7 +6,7 @@ import time
 
 from flask import g, request
 
-from swingmusic.db.libdata import ScrobbleTable
+from swingmusic.db.userdata import ScrobbleTable
 from swingmusic.store.albums import AlbumStore
 from swingmusic.store.artists import ArtistStore
 from swingmusic.store.tracks import TrackStore
