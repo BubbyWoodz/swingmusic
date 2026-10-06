@@ -43,7 +43,7 @@ class AssetHandler:
     Handles all assets configuration
     """
 
-    RELEASES_URL = "https://api.github.com/repos/swingmx/webclient/releases"
+    RELEASES_URL = "https://api.github.com/repos/BubbyWoodz/webclient/releases"
 
     @staticmethod
     def copy_assets_dir():
