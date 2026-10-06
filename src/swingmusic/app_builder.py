@@ -111,6 +111,9 @@ def load_endpoints(web: OpenAPI):
         # Replay stats (bubbywoodz fork)
         web.register_api(swing_api.replay.api)
 
+        # Connect device sync (bubbywoodz fork)
+        web.register_api(swing_api.connect.api)
+
 
 def load_plugins(web: OpenAPI):
     # TODO: rework plugin support
