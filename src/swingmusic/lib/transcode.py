@@ -14,6 +14,7 @@ Key pieces:
 import hashlib
 import os
 import subprocess
+import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -42,7 +43,27 @@ EXT_TO_FORMAT = {
     ".wma": "wma",
 }
 
+# Format -> ffmpeg muxer name for piping to stdout (no file extension to infer from).
+PIPE_FORMATS = {
+    "mp3": "mp3",
+    "opus": "opus",
+    "ogg": "ogg",
+    "aac": "adts",
+}
+
+# Format -> HTTP mimetype for streamed responses.
+TRANSCODE_MIMES = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/opus",
+    "ogg": "audio/ogg",
+    "aac": "audio/aac",
+}
+
 DEFAULT_CACHE_MAX_MB = 1024
+
+
+class TranscodeStreamError(Exception):
+    """Raised when a progressive transcode stream can't be started."""
 
 
 def parse_bitrate(value: str | int | None) -> int | None:
@@ -274,3 +295,255 @@ class TranscodeCache:
     def __len__(self) -> int:
         with self._lock:
             return len(self._entries)
+
+
+def build_ffmpeg_cmd(
+    input_path: str,
+    bitrate_kbps: int,
+    fmt: str,
+    seek_seconds: float = 0.0,
+) -> list[str]:
+    """
+    Build an ffmpeg command that transcodes to stdout (pipe:1).
+
+    seek_seconds > 0 seeks the *input* (-ss before -i), which is fast and
+    is how Range requests are honored for transcoded streams.
+    Raises TranscodeStreamError for unknown formats.
+    """
+    muxer = PIPE_FORMATS.get(fmt)
+    codec_args = TRANSCODE_FORMATS.get(fmt)
+    if muxer is None or codec_args is None:
+        raise TranscodeStreamError(f"unsupported transcode format: {fmt!r}")
+
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+    if seek_seconds and seek_seconds > 0:
+        cmd += ["-ss", f"{seek_seconds:.3f}"]
+    cmd += [
+        "-i",
+        input_path,
+        "-map_metadata",
+        "0",
+        "-vn",
+        "-b:a",
+        f"{bitrate_kbps}k",
+        *codec_args,
+        "-f",
+        muxer,
+        "pipe:1",
+    ]
+    return cmd
+
+
+def estimate_seek_seconds(
+    range_start: int,
+    bitrate_kbps: int,
+    duration: float | None = None,
+) -> float:
+    """
+    Estimate playback position (seconds) from a Range byte offset.
+
+    Assumes constant bitrate: bytes_per_sec = bitrate_kbps * 1000 / 8.
+    Approximate (within ~1s for CBR; close enough for VBR) and clamped
+    to [0, duration]. This is the standard approach for seeking in
+    transcoded streams.
+    """
+    if range_start <= 0:
+        return 0.0
+    bytes_per_sec = max(bitrate_kbps * 1000 / 8, 1.0)
+    seek = range_start / bytes_per_sec
+    if duration and duration > 0:
+        seek = min(seek, max(duration - 1.0, 0.0))
+    return max(seek, 0.0)
+
+
+class ProgressiveTranscoder:
+    """
+    Pipes ffmpeg's stdout directly to the HTTP response for instant playback.
+
+    - First audio chunk arrives in well under a second (no waiting for a
+      full transcode to disk).
+    - Closing the stream iterator (client disconnect) kills ffmpeg: no
+      orphan processes. Cleanup is idempotent.
+    - When streaming from position 0 with a cache + key, output is tee'd
+      to a temp file as it streams; on clean completion it is moved into
+      the TranscodeCache, so the next identical request serves from disk.
+      Partial (disconnected) streams are discarded, never cached.
+
+    Use response_stream() to get a primed, close()-able iterator for an
+    HTTP response. Priming reads the first chunk up front so ffmpeg
+    startup failures raise TranscodeStreamError *before* we commit to a
+    response, letting callers fall back to blocking transcode-then-serve.
+    """
+
+    def __init__(
+        self,
+        input_path: str,
+        bitrate_kbps: int,
+        fmt: str,
+        seek_seconds: float = 0.0,
+        cache: "TranscodeCache | None" = None,
+        cache_key: "str | None" = None,
+        chunk_size: int = 65536,
+    ):
+        self.input_path = input_path
+        self.bitrate_kbps = bitrate_kbps
+        self.fmt = fmt
+        self.seek_seconds = max(seek_seconds or 0.0, 0.0)
+        self.cache = cache
+        self.cache_key = cache_key
+        self.chunk_size = chunk_size
+        self.proc: "subprocess.Popen | None" = None
+        self._tmp_path: "str | None" = None
+        self._tmp_file = None
+        self._bytes_written = 0
+        # Only cache full streams; a seeked stream is a partial by definition.
+        self._caching = (
+            cache is not None and cache_key is not None and self.seek_seconds <= 0
+        )
+
+    def start(self) -> "ProgressiveTranscoder":
+        """Spawn ffmpeg. Idempotent. Raises TranscodeStreamError on failure."""
+        if self.proc is not None:
+            return self
+        cmd = build_ffmpeg_cmd(
+            self.input_path, self.bitrate_kbps, self.fmt, self.seek_seconds
+        )
+        try:
+            self.proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            raise TranscodeStreamError(f"could not start ffmpeg: {e}")
+        if self._caching:
+            fd, self._tmp_path = tempfile.mkstemp(
+                suffix=f".{self.fmt}", dir=self.cache.cache_dir, prefix="prog-"
+            )
+            self._tmp_file = os.fdopen(fd, "wb")
+        return self
+
+    def chunks(self):
+        """
+        Yield transcoded audio chunks.
+
+        The generator's finally block guarantees ffmpeg is reaped and the
+        partial cache file is handled whether the stream completes, the
+        client disconnects (generator closed early), or an error occurs.
+        """
+        if self.proc is None:
+            self.start()
+        completed = False
+        try:
+            while True:
+                chunk = self.proc.stdout.read(self.chunk_size)
+                if not chunk:
+                    break
+                self._bytes_written += len(chunk)
+                if self._tmp_file is not None:
+                    try:
+                        self._tmp_file.write(chunk)
+                    except OSError:
+                        # Cache write failure must never break the stream.
+                        pass
+                yield chunk
+            # Clean EOF: only cache successful, non-empty transcodes.
+            try:
+                rc = self.proc.wait(timeout=10)
+            except (subprocess.SubprocessError, OSError):
+                rc = -1
+            completed = rc == 0 and self._bytes_written > 0
+        finally:
+            self._finalize(completed)
+
+    def response_stream(self):
+        """
+        Return a primed, close()-able iterator of audio chunks for an HTTP
+        response. Raises TranscodeStreamError if ffmpeg produces no output.
+        """
+        self.start()
+        gen = self.chunks()
+        try:
+            first = next(gen)
+        except StopIteration:
+            try:
+                gen.close()
+            finally:
+                self.close()
+            raise TranscodeStreamError("ffmpeg produced no output")
+        except BaseException:
+            try:
+                gen.close()
+            finally:
+                self.close()
+            raise
+
+        outer = self
+
+        class _ResponseStream:
+            """Iterator that propagates close() to the ffmpeg process."""
+
+            def __init__(self):
+                self._gen = gen
+                self._first = first
+                self._primed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if not self._primed:
+                    self._primed = True
+                    return self._first
+                return next(self._gen)
+
+            def close(self):
+                try:
+                    self._gen.close()
+                finally:
+                    outer.close()
+
+        return _ResponseStream()
+
+    def _finalize(self, completed: bool) -> None:
+        if self._tmp_file is not None:
+            try:
+                self._tmp_file.close()
+            except OSError:
+                pass
+            self._tmp_file = None
+        self._kill()
+        if self._tmp_path is not None:
+            if completed and self._caching:
+                try:
+                    self.cache.put(self.cache_key, self._tmp_path, self.fmt)
+                except Exception:
+                    _safe_unlink(self._tmp_path)
+            else:
+                _safe_unlink(self._tmp_path)
+            self._tmp_path = None
+
+    def _kill(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            proc.wait(timeout=5)
+        except (subprocess.SubprocessError, OSError):
+            pass
+        for stream in (proc.stdout, proc.stderr, proc.stdin):
+            try:
+                if stream is not None:
+                    stream.close()
+            except (OSError, ValueError):
+                pass
+
+    def close(self) -> None:
+        """Idempotent: kill ffmpeg and discard any partial cache output."""
+        self._finalize(False)
