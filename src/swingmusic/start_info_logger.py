@@ -5,7 +5,7 @@ from swingmusic.utils.network import get_ip
 
 def log_startup_info(host: str, port: int):
     pid = os.getpid()
-    print(f"{TCOLOR.HEADER}Swing Music v{Metadata.version} (PID: {pid}) {TCOLOR.ENDC}")
+    print(f"{TCOLOR.HEADER}Reverb v{Metadata.version} (PID: {pid}) {TCOLOR.ENDC}")
 
     in_docker = os.environ.get("SWINGMUSIC_IN_DOCKER") == "1" or os.path.exists(
         "/.dockerenv"
