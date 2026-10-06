@@ -12,7 +12,7 @@ from flask_openapi3 import APIBlueprint, Tag
 from pydantic import BaseModel, Field
 
 from swingmusic.config import UserConfig
-from swingmusic.db.libdata import PlaylistTable
+from swingmusic.db.userdata import PlaylistTable
 from swingmusic.serializers.album import serialize_for_card as serialize_album_card
 from swingmusic.serializers.artist import serialize_for_card as serialize_artist_card
 from swingmusic.serializers.track import serialize_track
