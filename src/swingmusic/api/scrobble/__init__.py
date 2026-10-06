@@ -67,53 +67,141 @@ def format_date(start: float, end: float):
 def log_track(body: LogTrackBody):
     """
     Log a track play to the database.
+
+    Play-validity gate (bubbywoodz fork, Last.fm rule):
+    - timestamp = playback START (unix seconds). Backfill accepted up to
+      30 days old; timestamps >10min in the future are rejected (clock skew).
+    - A play counts when duration >= min(track.duration/2, 240) and the
+      track itself is longer than 30s. Sub-threshold plays are kept with
+      counted=false (skip analytics) but don't touch playcounts or charts.
+    - Dedup: a (userid, trackhash, timestamp) within ±5s of an existing row
+      is ignored as a duplicate.
     """
+    import time
+
     timestamp = body.timestamp
     duration = body.duration
+    now = int(time.time())
 
-    if not timestamp or duration < 5:
+    if not timestamp or duration < 1:
         return {"msg": "Invalid entry."}, 400
+
+    # Clock-skew guard: reject timestamps more than 10 minutes in the future
+    if timestamp > now + 600:
+        return {"msg": "Timestamp is in the future."}, 400
+
+    # Backfill window: 30 days (Rhydian's decision)
+    if timestamp < now - (30 * 24 * 3600):
+        return {"msg": "Timestamp is older than the 30-day backfill window."}, 400
 
     trackentry = TrackStore.trackhashmap.get(body.trackhash)
     if trackentry is None:
         return {"msg": "Track not found."}, 404
 
+    track = trackentry.tracks[0]
+    userid = get_current_userid()
+
+    # Dedup: same user+track within ±5s of an existing scrobble
+    # (checks all rows, including not-counted ones)
+    existing = ScrobbleTable.get_all_in_period(
+        timestamp - 5, timestamp + 5, userid, counted_only=False
+    )
+    for row in existing:
+        if row.trackhash == body.trackhash:
+            return {"msg": "duplicate", "counted": True}, 201
+
+    # Play-validity gate (Last.fm rule — Rhydian: fixed, not configurable)
+    track_len = track.duration or 0
+    threshold = min(track_len / 2, 240) if track_len > 30 else float("inf")
+    counted = bool(duration >= threshold)
+
     scrobble_data = dict(body)
-    # REVIEW: Do we need to store the extra info in the database?
-    # OR .... can we just write it to the backup file on demand?
     scrobble_data["extra"] = get_extra_info(body.trackhash, "track")
+    scrobble_data["counted"] = counted
+    scrobble_data["userid"] = userid
     ScrobbleTable.add(scrobble_data)
 
     # NOTE: Update the recently played homepage for this userid
-    RecentlyPlayed(userid=scrobble_data["userid"])
+    RecentlyPlayed(userid=userid)
 
-    # Update play data on the in-memory stores
-    track = trackentry.tracks[0]
-    album = AlbumStore.albummap.get(track.albumhash)
+    if counted:
+        # Update play data on the in-memory stores (only for counted plays)
+        album = AlbumStore.albummap.get(track.albumhash)
 
-    if album:
-        album.increment_playcount(duration, timestamp)
+        if album:
+            album.increment_playcount(duration, timestamp)
 
-    for hash in track.artisthashes:
-        artist = ArtistStore.artistmap.get(hash)
+        for hash in track.artisthashes:
+            artist = ArtistStore.artistmap.get(hash)
 
-        if artist:
-            artist.increment_playcount(duration, timestamp)
+            if artist:
+                artist.increment_playcount(duration, timestamp)
 
-    trackentry.increment_playcount(duration, timestamp)
-    track = trackentry.tracks[0]
+        trackentry.increment_playcount(duration, timestamp)
 
-    lastfm = LastFmPlugin(current_userid=get_current_userid())
+    lastfm = LastFmPlugin(current_userid=userid)
 
-    if (
-        lastfm.enabled
-        and track.duration > 30
-        and body.duration >= min(track.duration / 2, 240)
-        # SEE: https://www.last.fm/api/scrobbling#when-is-a-scrobble-a-scrobble
-    ):
+    if lastfm.enabled and counted:
         lastfm.scrobble(trackentry.tracks[0], timestamp)
 
-    return {"msg": "recorded"}, 201
+    return {"msg": "recorded" if counted else "not-counted", "counted": counted}, 201
+
+
+# In-memory now-playing state: {userid: {trackhash, timestamp, position, expires_at}}
+# Transient only — never persisted. TTL ~2x track length.
+_now_playing: dict[int, dict] = {}
+
+
+class NowPlayingBody(TrackHashSchema):
+    timestamp: int = Field(description="Playback start timestamp (unix seconds)")
+    position: int = Field(0, description="Current position in seconds")
+
+
+@api.post("/now-playing")
+def now_playing(body: NowPlayingBody):
+    """
+    Lightweight now-playing heartbeat (bubbywoodz fork).
+
+    Stored in memory only, per user, with a TTL. Powers live
+    "now playing" dashboard tiles. Safe to drop on failure.
+    """
+    import time
+
+    userid = get_current_userid()
+    trackentry = TrackStore.trackhashmap.get(body.trackhash)
+    if trackentry is None:
+        return {"msg": "Track not found."}, 404
+
+    track = trackentry.tracks[0]
+    ttl = int((track.duration or 180) * 2)
+    _now_playing[userid] = {
+        "trackhash": body.trackhash,
+        "timestamp": body.timestamp,
+        "position": body.position,
+        "expires_at": int(time.time()) + ttl,
+    }
+    return {"msg": "ok"}, 200
+
+
+@api.get("/now-playing")
+def get_now_playing():
+    """Get the current user's now-playing state, if not expired."""
+    import time
+
+    userid = get_current_userid()
+    state = _now_playing.get(userid)
+    if not state or state["expires_at"] < time.time():
+        _now_playing.pop(userid, None)
+        return {"playing": False}, 200
+    return {"playing": True, **state}, 200
+
+
+@api.delete("/now-playing")
+def clear_now_playing():
+    """Clear the current user's now-playing state (on pause/stop)."""
+    userid = get_current_userid()
+    _now_playing.pop(userid, None)
+    return {"msg": "cleared"}, 200
 
 
 class ChartItemsQuery(BaseModel):

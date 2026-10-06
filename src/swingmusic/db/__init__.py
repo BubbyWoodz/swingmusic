@@ -64,3 +64,26 @@ def create_all_tables():
     Creates all the tables that build on the Base class.
     """
     Base().metadata.create_all(DbEngine.engine)
+    _migrate_scrobble_counted_column()
+
+
+def _migrate_scrobble_counted_column():
+    """
+    bubbywoodz fork: add the `counted` column to the scrobble table for
+    databases created before the play-validity gate (Feature 3).
+    Idempotent — no-op if the column already exists.
+    Existing rows default to counted=1 (grandfathered in).
+    """
+    from sqlalchemy import inspect, text
+
+    try:
+        inspector = inspect(DbEngine.engine)
+        columns = [c["name"] for c in inspector.get_columns("scrobble")]
+        if "counted" not in columns:
+            with DbEngine.engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE scrobble ADD COLUMN counted BOOLEAN DEFAULT 1 NOT NULL")
+                )
+    except Exception:
+        # Table may not exist yet on a truly fresh install; create_all handles it.
+        pass

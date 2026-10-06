@@ -108,6 +108,9 @@ def load_endpoints(web: OpenAPI):
         # Subsonic / OpenSubsonic API (bubbywoodz fork: plain Flask blueprint)
         web.register_blueprint(swing_api.subsonic.bp)
 
+        # Replay stats (bubbywoodz fork)
+        web.register_api(swing_api.replay.api)
+
 
 def load_plugins(web: OpenAPI):
     # TODO: rework plugin support

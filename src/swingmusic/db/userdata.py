@@ -342,6 +342,10 @@ class ScrobbleTable(Base):
     extra: Mapped[dict[str, Any]] = mapped_column(
         JSON(), nullable=True, default_factory=dict
     )
+    # bubbywoodz fork: whether this play counted toward charts/Replay.
+    # False = sub-threshold skip (kept for analytics, excluded from charts).
+    # Defaults True so pre-existing rows are grandfathered in.
+    counted: Mapped[bool] = mapped_column(Boolean(), default=True, nullable=False)
 
     @classmethod
     def add(cls, item: dict[str, Any]):
@@ -388,18 +392,25 @@ class ScrobbleTable(Base):
         )
 
     @classmethod
-    def get_all_in_period(cls, start_time: int, end_time: int, userid: int | None):
+    def get_all_in_period(
+        cls, start_time: int, end_time: int, userid: int | None, counted_only: bool = True
+    ):
         # UserId will be None if function is called from the API
         # In that case, we use the request userid
         if userid is None:
             userid = get_current_userid()
 
-        result = cls.execute(
+        # bubbywoodz fork: filter to counted plays by default (charts/Replay).
+        # Pass counted_only=False for skip analytics or dedup checks.
+        query = (
             select(cls)
             .where(cls.userid == userid)
             .where(and_(cls.timestamp >= start_time, cls.timestamp <= end_time))
-            .order_by(cls.timestamp.desc())
-            .execution_options(yield_per=100)
+        )
+        if counted_only:
+            query = query.where(cls.counted.is_(True))
+        result = cls.execute(
+            query.order_by(cls.timestamp.desc()).execution_options(yield_per=100)
         )
 
         for i in next(result).scalars():

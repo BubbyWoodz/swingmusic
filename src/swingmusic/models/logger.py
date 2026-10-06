@@ -18,6 +18,7 @@ class TrackLog:
     """
     userid: int
     extra: dict[str, Any]
+    counted: bool = True  # bubbywoodz fork: False = sub-threshold skip
 
     type = "track"
     type_src = None
