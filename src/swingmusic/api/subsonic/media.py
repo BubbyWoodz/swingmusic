@@ -38,11 +38,76 @@ def stream():
     track = _find_track_file(song_id)
     if track is None:
         return error(70, "Song not found.")
-    # TODO: transcoding via maxBitRate/format params (future)
+
+    # Honor Subsonic transcoding params: maxBitRate (kbps) and format.
+    from swingmusic.api.stream import get_transcode_cache
+    from swingmusic.lib.transcode import (
+        cache_key,
+        effective_bitrate,
+        normalize_format,
+        parse_bitrate,
+        should_transcode,
+        transcode_file,
+    )
+    import tempfile
+
+    max_br = request.args.get("maxBitRate") or request.form.get("maxBitRate")
+    req_format = normalize_format(
+        request.args.get("format") or request.form.get("format")
+    )
+    req_bitrate = parse_bitrate(max_br)
+
+    if not should_transcode(track.bitrate, track.filepath, req_bitrate, req_format):
+        return send_from_directory(
+            Path(track.filepath).parent,
+            Path(track.filepath).name,
+            mimetype=guess_mime_type(track.filepath),
+            conditional=True,
+            as_attachment=False,
+        )
+
+    fmt = req_format or "mp3"
+    bitrate = min(effective_bitrate(track.bitrate, req_bitrate) or 128, 320)
+
+    cache = get_transcode_cache()
+    key = cache_key(track.trackhash, bitrate, fmt)
+    cached = cache.get(key)
+    if cached is not None:
+        return send_from_directory(
+            Path(cached).parent,
+            Path(cached).name,
+            mimetype=guess_mime_type(cached),
+            conditional=True,
+            as_attachment=False,
+        )
+
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, suffix=f".{fmt}", dir=cache.cache_dir
+    )
+    tmp.close()
+    if not transcode_file(track.filepath, tmp.name, bitrate, fmt):
+        # Fall back to the original file rather than failing the stream.
+        return send_from_directory(
+            Path(track.filepath).parent,
+            Path(track.filepath).name,
+            mimetype=guess_mime_type(track.filepath),
+            conditional=True,
+            as_attachment=False,
+        )
+
+    cached_path = cache.put(key, tmp.name, fmt)
+    if cached_path is None:
+        return send_from_directory(
+            Path(track.filepath).parent,
+            Path(track.filepath).name,
+            mimetype=guess_mime_type(track.filepath),
+            conditional=True,
+            as_attachment=False,
+        )
     return send_from_directory(
-        Path(track.filepath).parent,
-        Path(track.filepath).name,
-        mimetype=guess_mime_type(track.filepath),
+        Path(cached_path).parent,
+        Path(cached_path).name,
+        mimetype=guess_mime_type(cached_path),
         conditional=True,
         as_attachment=False,
     )
