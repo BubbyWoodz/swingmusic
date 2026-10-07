@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from flask_openapi3 import Tag
 from flask_openapi3 import APIBlueprint
@@ -16,30 +17,36 @@ bp_tag = Tag(
 )
 api = APIBlueprint("imgserver", __name__, url_prefix="/img", abp_tags=[bp_tag])
 
+# Cap concurrent PIL thumbnail work. Each thread holds a decompressed image
+# (~27MB+ for a large cover); unbounded threads caused multi-GB RAM spikes
+# when clients fired off hundreds of thumbnail requests at once.
+_thumb_semaphore = threading.Semaphore(8)
+
 
 @background
 def cache_thumbnails(filepath: Path, trackhash: str):
     """
     Resizes the image and stores it in the cache directory.
     """
-    image = Image.open(filepath)
-    path = Path(Paths().image_cache_path)
-    aspect_ratio = image.width / image.height
+    with _thumb_semaphore:
+        image = Image.open(filepath)
+        path = Path(Paths().image_cache_path)
+        aspect_ratio = image.width / image.height
 
-    sizes = {
-        "xsmall": 64,
-        "small": 96,
-        "medium": 256,
-        "large": 512,
-    }
+        sizes = {
+            "xsmall": 64,
+            "small": 96,
+            "medium": 256,
+            "large": 512,
+        }
 
-    for size, width in sizes.items():
-        width = min(width, image.width)
-        height = int(width / aspect_ratio)
+        for size, width in sizes.items():
+            width = min(width, image.width)
+            height = int(width / aspect_ratio)
 
-        resized_path = path / size / (trackhash + ".webp")
-        resized_path.parent.mkdir(parents=True, exist_ok=True)
-        image.resize((width, height)).save(resized_path, format="webp")
+            resized_path = path / size / (trackhash + ".webp")
+            resized_path.parent.mkdir(parents=True, exist_ok=True)
+            image.resize((width, height)).save(resized_path, format="webp")
 
 
 def find_thumbnail(albumhash: str, pathhash: str):
